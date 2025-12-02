@@ -1,0 +1,141 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  # Unit Tests
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: risk_orchestrator_test
+          POSTGRES_USER: riskuser
+          POSTGRES_PASSWORD: testpass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e risk-core/
+    
+    - name: Run linting
+      run: |
+        pip install flake8 black isort
+        flake8 app/ risk-core/ --max-line-length=120 --exclude=__pycache__
+        black --check app/ risk-core/
+        isort --check-only app/ risk-core/
+    
+    - name: Run unit tests
+      env:
+        DATABASE_URL: postgresql+asyncpg://riskuser:testpass@localhost:5432/risk_orchestrator_test
+        SECRET_KEY: test-secret-key-for-ci
+        REDIS_URL: redis://localhost:6379/0
+      run: |
+        pytest tests/test_risk_core/ -v -m unit --cov=risk_core --cov-report=xml
+    
+    - name: Run integration tests
+      env:
+        DATABASE_URL: postgresql+asyncpg://riskuser:testpass@localhost:5432/risk_orchestrator_test
+        SECRET_KEY: test-secret-key-for-ci
+        REDIS_URL: redis://localhost:6379/0
+      run: |
+        pytest tests/test_api/ tests/test_services/ -v -m integration --cov=app --cov-report=xml
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+  
+  # Build Docker Image
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Login to Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ secrets.REGISTRY_URL }}
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
+    
+    - name: Build and push
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.REGISTRY_URL }}/risk-orchestrator:latest
+          ${{ secrets.REGISTRY_URL }}/risk-orchestrator:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+  
+  # Deploy to Kubernetes
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure kubectl
+      uses: azure/k8s-set-context@v3
+      with:
+        kubeconfig: ${{ secrets.KUBE_CONFIG }}
+    
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl apply -f infra/k8s-deployment.yaml
+        kubectl rollout status deployment/risk-orchestrator -n risk-platform
+    
+    - name: Run smoke tests
+      run: |
+        kubectl run smoke-test --rm -i --restart=Never --image=curlimages/curl -- \
+          curl -f http://risk-orchestrator.risk-platform.svc.cluster.local/api/v1/health

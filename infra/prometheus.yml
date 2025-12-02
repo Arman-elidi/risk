@@ -1,0 +1,20 @@
+# Prometheus configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Risk Orchestrator API metrics
+  - job_name: 'risk-orchestrator'
+    static_configs:
+      - targets: ['risk-api:8000']
+    metrics_path: '/api/v1/metrics'
+    
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Alerting rules (optional)
+rule_files:
+  - 'alerts.yml'

@@ -1,0 +1,64 @@
+# Prometheus alerting rules for Risk Orchestrator
+groups:
+  - name: risk_orchestrator_alerts
+    interval: 30s
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} errors/sec"
+
+      # High API latency
+      - alert: HighAPILatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Failed risk calculations
+      - alert: RiskCalculationFailures
+        expr: rate(risk_calculations_total{status="FAILED"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Risk calculation failures detected"
+          description: "{{ $value }} failed calculations in last 10 minutes"
+
+      # Critical alerts not acknowledged
+      - alert: UnacknowledgedCriticalAlerts
+        expr: alerts_active{severity="CRITICAL"} > 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical alerts not acknowledged"
+          description: "{{ $value }} critical alerts have been active for 30+ minutes"
+
+      # ETL job failures
+      - alert: ETLJobFailures
+        expr: rate(etl_jobs_total{status="FAILED"}[1h]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ETL job failures"
+          description: "ETL job {{ $labels.job_name }} is failing"
+
+      # Database connection errors
+      - alert: DatabaseConnectionErrors
+        expr: rate(db_connection_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection errors"
+          description: "Unable to connect to database"

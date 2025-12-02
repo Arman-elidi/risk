@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: risk_orchestrator
+      POSTGRES_USER: riskuser
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U riskuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (optional - for caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Risk Orchestrator API
+  risk-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://riskuser:${DB_PASSWORD}@postgres:5432/risk_orchestrator
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_ENABLED=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./reports:/var/risk-reports
+    restart: unless-stopped
+
+  # Prometheus (monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+
+  # Grafana (visualization)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana-dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
